@@ -6,6 +6,8 @@ import com.amazonaws.regions.Region;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient;
 import com.amazonaws.services.dynamodbv2.model.*;
+import com.google.common.collect.Collections2;
+import com.google.common.collect.Maps;
 import org.apache.jackrabbit.mk.api.MicroKernelException;
 import org.apache.jackrabbit.oak.cache.CacheStats;
 import org.apache.jackrabbit.oak.plugins.document.*;
@@ -25,15 +27,19 @@ import java.util.*;
  * User: Denis Mikhalkin
  * Date: 13/11/2014
  * Time: 11:06 PM
- * TODO: Write integration test (similar to MongoIT)
  * TODO: Implement initialization service
- * TODO: Initialize Git in repository
+ * TODO: Add _modified index
+ * TODO: Handle store.query(Collection.NODES, NodeDocument.MIN_ID_VALUE, NodeDocument.MAX_ID_VALUE, NodeDocument.MODIFIED_IN_SECS,  NodeDocument.getModifiedInSecs(startTime), Integer.MAX_VALUE);
  */
-public class DynamoDBDocumentStore implements CachingDocumentStore {
+public class DynamoDBDocumentStore implements DocumentStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(DynamoDBDocumentStore.class);
 
     private final Comparator<Revision> comparator = StableRevisionComparator.REVERSE;
+
+    public static final String PATH = "dynamodb:Path";
+    public static final String NAME = "dynamodb:Name";
+
     AmazonDynamoDBClient dynamoDB;
 
     public DynamoDBDocumentStore() {
@@ -59,7 +65,9 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
             dynamoDB.describeTable(tableName);
         } catch (ResourceNotFoundException rnfe) {
             // Table does not exist
-            dynamoDB.createTable(new CreateTableRequest(tableName, Arrays.asList(new KeySchemaElement(Document.ID, KeyType.HASH))));
+            dynamoDB.createTable(new CreateTableRequest(tableName, Arrays.asList(new KeySchemaElement(PATH, KeyType.HASH), new KeySchemaElement(NAME, KeyType.RANGE)))
+                    .withAttributeDefinitions(new AttributeDefinition(PATH, ScalarAttributeType.S), new AttributeDefinition(NAME, ScalarAttributeType.S))
+                    .withProvisionedThroughput(new ProvisionedThroughput(1L,1L)));
         } catch (AmazonClientException e) {
             LOG.error("Exception checking Nodes table", e);
         }
@@ -67,15 +75,93 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
 
     @Override
     public <T extends Document> T find(Collection<T> collection, String key) {
-        GetItemResult res = dynamoDB.getItem(new GetItemRequest(collectionToTable(collection), Collections.singletonMap(Document.ID, new AttributeValue(key))));
+        GetItemResult res = dynamoDB.getItem(new GetItemRequest(collectionToTable(collection), keyMap(key)));
         if (res != null) {
-            return itemToDocument(res.getItem());
+            return itemToDocument(collection, res.getItem());
         }
         return null;
     }
 
-    private <T extends Document> T itemToDocument(Map<String, AttributeValue> item) {
-        return null;
+    private Map<String, AttributeValue> keyMap(String key) {
+        int index = key.lastIndexOf('/');
+        if (index == -1 || key.length() == 1) {
+            HashMap<String, AttributeValue> res = new HashMap<String, AttributeValue>();
+            res.put(PATH, new AttributeValue("0:"));
+            res.put(NAME, new AttributeValue(key));
+            return res;
+        } else {
+            if (index == key.length()-1) {
+                index = key.lastIndexOf('/', index-1);
+            }
+            if (index == -1) { // only 1 slash
+                HashMap<String, AttributeValue> res = new HashMap<String, AttributeValue>();
+                res.put(PATH, new AttributeValue("0:"));
+                res.put(NAME, new AttributeValue(key));
+                return res;
+            }
+            HashMap<String, AttributeValue> res = new HashMap<String, AttributeValue>();
+            res.put(PATH, new AttributeValue(key.substring(0, index)));
+            res.put(NAME, new AttributeValue(key.substring(index+1)));
+            return res;
+        }
+    }
+
+    private AttributeValue getHashKey(String key) {
+        int index = key.lastIndexOf('/');
+        if (index == -1 || key.length() == 1) {
+            return new AttributeValue("0:");
+        } else {
+            if (index == key.length()-1) {
+                index = key.lastIndexOf('/', index-1);
+            }
+            if (index == -1) return new AttributeValue("0:");
+            return new AttributeValue(key.substring(0, index));
+        }
+    }
+
+    private AttributeValue getRangeKey(String key) {
+        int index = key.lastIndexOf('/');
+        if (index == -1 || key.length() == 1) {
+            return new AttributeValue(key);
+        } else {
+            if (index == key.length()-1) {
+                index = key.lastIndexOf('/', index-1);
+            }
+            if (index == -1) return new AttributeValue(key);
+            return new AttributeValue(key.substring(index+1));
+        }
+    }
+
+    private <T extends Document> T itemToDocument(Collection<T> collection, Map<String, AttributeValue> item) {
+        if (item == null) return null;
+
+        T doc = collection.newDocument(this);
+        for (Map.Entry<String, AttributeValue> entry : item.entrySet()) {
+            if (PATH.equals(entry.getKey()) || NAME.equals(entry.getKey())) continue;
+            doc.put(entry.getKey(), attrToObject(entry.getValue()));
+        }
+        return doc;
+    }
+
+    private Object attrToObject(AttributeValue value) {
+        if (value == null) {
+            return null;
+        }
+        if (value.getBOOL() != null) {
+            return value.getBOOL();
+        } else if (value.getN() != null) {
+            return Long.valueOf(value.getN());
+        } else if (value.getM() != null) {
+            return docMap(value.getM());
+        } else return value.getS();
+    }
+
+    private Map<Revision, Object> docMap(Map<String, AttributeValue> m) {
+        Map<Revision, Object> map = new TreeMap<Revision, Object>(comparator);
+        for (Map.Entry<String, AttributeValue> entry : m.entrySet()) {
+            map.put(Revision.fromString(entry.getKey()), attrToObject(entry.getValue()));
+        }
+        return map;
     }
 
     private <T extends Document> String collectionToTable(Collection<T> collection) {
@@ -99,8 +185,12 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
         // fromKey, toKey - assumes "key" is ordered sequence
         // indexedProperty - assumes ordered property, startValue refers to its value and above. Can be MODIFIED_IN_SECS, HAS_BINARY_FLAG
         QueryRequest request = new QueryRequest(collectionToTable(collection));
-        request.addExclusiveStartKeyEntry(Document.ID, new AttributeValue(fromKey));
-        request.addKeyConditionsEntry(Document.ID, new Condition().withAttributeValueList(new AttributeValue(fromKey), new AttributeValue(toKey)).withComparisonOperator(ComparisonOperator.BETWEEN));
+        request.addKeyConditionsEntry(PATH, new Condition().withAttributeValueList(getHashKey(fromKey)).withComparisonOperator(ComparisonOperator.EQ));
+        if (!getHashKey(fromKey).equals(getHashKey(toKey))) {
+            request.addKeyConditionsEntry(NAME, new Condition().withAttributeValueList(getRangeKey(fromKey)).withComparisonOperator(ComparisonOperator.GE));
+        } else {
+            request.addKeyConditionsEntry(NAME, new Condition().withAttributeValueList(getRangeKey(fromKey), getRangeKey(toKey)).withComparisonOperator(ComparisonOperator.BETWEEN));
+        }
         if (indexedProperty != null) {
             // Assumes this kind of query will only ever run using a local index
             request.addKeyConditionsEntry(indexedProperty, new Condition().withAttributeValueList(new AttributeValue(String.valueOf(startValue))).withComparisonOperator(ComparisonOperator.GE));
@@ -112,7 +202,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
         if (result != null) {
             ArrayList<T> list = new ArrayList<T>();
             for (Map<String, AttributeValue> item : result.getItems()) {
-                list.add((T)itemToDocument(item));
+                list.add((T)itemToDocument(collection, item));
             }
             return list;
         }
@@ -121,7 +211,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
 
     @Override
     public <T extends Document> void remove(Collection<T> collection, String key) {
-        dynamoDB.deleteItem(new DeleteItemRequest(collectionToTable(collection), Collections.singletonMap(Document.ID, new AttributeValue(key))));
+        dynamoDB.deleteItem(new DeleteItemRequest(collectionToTable(collection), keyMap(key)));
     }
 
     @Override
@@ -143,10 +233,10 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
         UpdateItemRequest request = getUpdateItemRequest(collection, updateOp, upsert, checkConditions);
         try {
             UpdateItemResult result = dynamoDB.updateItem(request);
-            if (result.getAttributes().size() == 0) {
+            if (result == null || result.getAttributes() == null || result.getAttributes().size() == 0) {
                 return null;
             }
-            return itemToDocument(result.getAttributes());
+            return itemToDocument(collection, result.getAttributes());
         } catch (ConditionalCheckFailedException cf) {
             LOG.error("Conditional check violation for " + updateOp.getId() + " during findAndModify", cf);
             return handleMaxUpdate(collection, updateOp, upsert, checkConditions, cf);
@@ -190,7 +280,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
     private <T extends Document> Map<String, Comparable> getMaxValues(Collection<T> collection, UpdateOp updateOp) {
         GetItemRequest request = new GetItemRequest()
                 .withTableName(collectionToTable(collection))
-                .addKeyEntry(Document.ID, new AttributeValue(updateOp.getId()));
+                .addKeyEntry(PATH, new AttributeValue(updateOp.getId()));
         ArrayList<String> maxAttributes = new ArrayList<String>();
         for (Map.Entry<UpdateOp.Key, UpdateOp.Operation> entry : updateOp.getChanges().entrySet()) {
             UpdateOp.Key k = entry.getKey();
@@ -214,9 +304,10 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
     private <T extends Document> UpdateItemRequest getUpdateItemRequest(Collection<T> collection, UpdateOp updateOp, boolean upsert, boolean checkConditions) {
         UpdateItemRequest request = new UpdateItemRequest()
                 .withTableName(collectionToTable(collection))
-                .addKeyEntry(Document.ID, new AttributeValue(updateOp.getId()))
+                .addKeyEntry(PATH, getHashKey(updateOp.getId()))
+                .addKeyEntry(NAME, getRangeKey(updateOp.getId()))
                 .withReturnValues(ReturnValue.ALL_OLD)
-                .addAttributeUpdatesEntry(Document.MOD_COUNT, new AttributeValueUpdate(new AttributeValue("1"), AttributeAction.ADD));
+                .addAttributeUpdatesEntry(Document.MOD_COUNT, new AttributeValueUpdate(new AttributeValue().withN("1"), AttributeAction.ADD));
 
         for (Map.Entry<UpdateOp.Key, UpdateOp.Operation> entry : updateOp.getChanges().entrySet()) {
             UpdateOp.Key k = entry.getKey();
@@ -228,17 +319,17 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
             switch (op.type) {
                 case SET:
                 case SET_MAP_ENTRY:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue(op.value.toString()), AttributeAction.PUT));
+                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
                     break;
                 case MAX:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue(op.value.toString()), AttributeAction.PUT));
-                    request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(new AttributeValue(op.value.toString())).withComparisonOperator(ComparisonOperator.LE));
+                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
+                    request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(new AttributeValue().withN(op.value.toString())).withComparisonOperator(ComparisonOperator.LE));
                     break;
                 case INCREMENT:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue(op.value.toString()), AttributeAction.ADD));
+                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.ADD));
                     break;
                 case REMOVE_MAP_ENTRY:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue(op.value.toString()), AttributeAction.DELETE));
+                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(op.value == null ? null : attributeValueForObject(op.value), AttributeAction.DELETE));
                     break;
                 case CONTAINS_MAP_ENTRY:
                     if (checkConditions) {
@@ -253,7 +344,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
         }
         // If creation is not allowed, we add a condition for "should exist"
         if (!upsert) {
-            request.addExpectedEntry(Document.ID, new ExpectedAttributeValue(true));
+            request.addExpectedEntry(PATH, new ExpectedAttributeValue(getHashKey(updateOp.getId())));
         }
         return request;
     }
@@ -297,7 +388,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
                 case SET:
                 case MAX:
                 case INCREMENT: {
-                    request.addItemEntry(k.toString(), new AttributeValue(op.value.toString()));
+                    request.addItemEntry(k.toString(), attributeValueForObject(op.value));
                     break;
                 }
                 case SET_MAP_ENTRY: {
@@ -307,7 +398,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
                                 "SET_MAP_ENTRY must not have null revision");
                     }
                     request.addItemEntry(k.getName(), new AttributeValue()
-                            .withM(Collections.singletonMap(r.toString(), new AttributeValue(op.value.toString()))));
+                            .withM(Collections.singletonMap(r.toString(), attributeValueForObject(op.value))));
                     break;
                 }
                 case REMOVE_MAP_ENTRY:
@@ -319,9 +410,21 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
             }
         }
         if (!seenModCount) {
-            request.addItemEntry(Document.MOD_COUNT, new AttributeValue("1"));
+            request.addItemEntry(Document.MOD_COUNT, attributeValueForObject(1));
         }
+        request.addItemEntry(PATH, getHashKey(update.getId()));
+        request.addItemEntry(NAME, getRangeKey(update.getId()));
         return request;
+    }
+
+    private AttributeValue attributeValueForObject(Object value) {
+        if (value instanceof String) {
+            return new AttributeValue((String)value);
+        } else if (value instanceof Number) {
+            return new AttributeValue().withN(String.valueOf(value));
+        } else if (value instanceof Boolean) {
+            return new AttributeValue().withBOOL((Boolean)value);
+        } else throw new MicroKernelException("Unsupported attribute value " + value + "(" + value.getClass() + ")");
     }
 
     @Override
@@ -329,7 +432,7 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
         UpdateItemRequest request = getUpdateItemRequest(collection, updateOp, false, true);
         try {
             for (String key : keys) {
-                dynamoDB.updateItem(request.withKey(Collections.singletonMap(Document.ID, new AttributeValue(key))));
+                dynamoDB.updateItem(request.withKey(keyMap(key)));
             }
         } catch (Throwable t) {
             throw new MicroKernelException(t);
@@ -369,10 +472,5 @@ public class DynamoDBDocumentStore implements CachingDocumentStore {
     @Override
     public void setReadWriteMode(String s) {
 
-    }
-
-    @Override
-    public CacheStats getCacheStats() {
-        return null;
     }
 }
