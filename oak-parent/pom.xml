@@ -1,0 +1,493 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+   Licensed to the Apache Software Foundation (ASF) under one or more
+   contributor license agreements.  See the NOTICE file distributed with
+   this work for additional information regarding copyright ownership.
+   The ASF licenses this file to You under the Apache License, Version 2.0
+   (the "License"); you may not use this file except in compliance with
+   the License.  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+  -->
+
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd ">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>org.apache</groupId>
+    <artifactId>apache</artifactId>
+    <version>13</version>
+    <relativePath />
+  </parent>
+
+  <groupId>org.apache.jackrabbit</groupId>
+  <artifactId>oak-parent</artifactId>
+  <name>Oak Parent POM</name>
+  <version>1.0.7</version>
+  <packaging>pom</packaging>
+
+  <properties>
+    <test.opts.memory>-Xmx512m -XX:MaxPermSize=64m</test.opts.memory>
+    <test.opts>${test.opts.memory} -XX:+HeapDumpOnOutOfMemoryError -Dupdate.limit=100 -Djava.awt.headless=true</test.opts>
+    <skip.deployment>false</skip.deployment>
+    <known.issues />
+    <project.reporting.outputEncoding>
+      ${project.build.sourceEncoding}
+    </project.reporting.outputEncoding>
+    <jackrabbit.version>2.8.0</jackrabbit.version>
+    <mongo.host>127.0.0.1</mongo.host>
+    <mongo.port>27017</mongo.port>
+    <mongo.db>MongoMKDB</mongo.db>
+    <mongo.db2>MongoMKDB2</mongo.db2>
+    <segment.db>SegmentMK</segment.db>
+    <lucene.version>4.7.1</lucene.version>
+    <!-- Note that we're using SLF4J API version 1.7 when compiling     -->
+    <!-- core Oak components but more recent SLF4J and Logback versions -->
+    <!-- when compiling and running test cases and the oak-run jar.     -->
+    <!-- This way it's possible to use Oak also in environments that    -->
+    <!-- only provide SLF4J version 1.7, while still using a more       -->
+    <!-- recent version (if required) when we are in control the runtime environment. -->
+    <slf4j.api.version>1.7.6</slf4j.api.version>
+    <slf4j.version>1.7.6</slf4j.version> <!-- sync with logback version -->
+    <logback.version>1.1.0</logback.version>
+  </properties>
+
+  <issueManagement>
+    <system>Jira</system>
+    <url>http://issues.apache.org/jira/browse/OAK</url>
+  </issueManagement>
+
+  <url>http://jackrabbit.apache.org/</url>
+  <inceptionYear>2012</inceptionYear>
+  <description>
+    The goal of the Oak effort within the Apache Jackrabbit™ project is
+    to implement a scalable and performant hierarchical content repository
+    for use as the foundation of modern world-class web sites and other
+    demanding content applications.
+  </description>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <configuration>
+            <target>1.6</target>
+            <source>1.6</source>
+          </configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-javadoc-plugin</artifactId>
+          <configuration>
+            <source>1.6</source>
+            <links>
+              <link>http://docs.oracle.com/javase/6/docs/api/</link>
+            </links>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.felix</groupId>
+          <artifactId>maven-bundle-plugin</artifactId>
+          <version>2.4.0</version>
+          <extensions>true</extensions>
+          <inherited>true</inherited>
+          <configuration>
+            <obrRepository>NONE</obrRepository>
+            <instructions>
+              <Bundle-Category>oak</Bundle-Category>
+              <Bundle-DocURL>
+                http://jackrabbit.apache.org/oak/
+              </Bundle-DocURL>
+              <Bundle-Vendor>The Apache Software Foundation</Bundle-Vendor>
+            </instructions>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.felix</groupId>
+          <artifactId>maven-scr-plugin</artifactId>
+          <version>1.16.0</version>
+          <executions>
+            <execution>
+              <id>generate-scr-scrdescriptor</id>
+              <goals>
+                <goal>scr</goal>
+              </goals>
+              <configuration>
+                <properties>
+                  <service.vendor>The Apache Software Foundation</service.vendor>
+                </properties>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin>
+        <plugin>
+          <artifactId>maven-deploy-plugin</artifactId>
+          <configuration>
+            <skip>${skip.deployment}</skip>
+          </configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-release-plugin</artifactId>
+          <configuration>
+            <autoVersionSubmodules>true</autoVersionSubmodules>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.rat</groupId>
+          <artifactId>apache-rat-plugin</artifactId>
+          <version>0.10</version>
+        </plugin>
+        <plugin>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <configuration>
+            <argLine>${test.opts}</argLine>
+            <systemPropertyVariables>
+              <known.issues>${known.issues}</known.issues>
+              <mongo.host>${mongo.host}</mongo.host>
+              <mongo.port>${mongo.port}</mongo.port>
+              <mongo.db>${mongo.db}</mongo.db>
+              <mongo.db2>${mongo.db2}</mongo.db2>
+              <segment.db>${segment.db}</segment.db>
+            </systemPropertyVariables>
+            <redirectTestOutputToFile>true</redirectTestOutputToFile>
+          </configuration>
+        </plugin>
+        <plugin>
+          <artifactId>maven-failsafe-plugin</artifactId>
+          <configuration>
+            <argLine>${test.opts}</argLine>
+            <systemPropertyVariables>
+              <known.issues>${known.issues}</known.issues>
+              <mongo.host>${mongo.host}</mongo.host>
+              <mongo.port>${mongo.port}</mongo.port>
+              <mongo.db>${mongo.db}</mongo.db>
+              <mongo.db2>${mongo.db2}</mongo.db2>
+            </systemPropertyVariables>
+          </configuration>
+        </plugin>
+          <plugin>
+            <artifactId>maven-checkstyle-plugin</artifactId>
+            <version>2.11</version>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>findbugs-maven-plugin</artifactId>
+            <version>2.5.3</version>
+          </plugin>
+        <!-- This plugin's configuration is used to store Eclipse m2e      -->
+        <!-- settings only. It has no influence on the Maven build itself. -->
+        <plugin>
+          <groupId>org.eclipse.m2e</groupId>
+          <artifactId>lifecycle-mapping</artifactId>
+          <version>1.0.0</version>
+          <configuration>
+            <lifecycleMappingMetadata>
+              <pluginExecutions>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.apache.felix</groupId>
+                    <artifactId>maven-scr-plugin</artifactId>
+                    <versionRange>[1.7.4,)</versionRange>
+                    <goals>
+                      <goal>scr</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <execute />
+                  </action>
+                </pluginExecution>
+                <pluginExecution>
+                  <pluginExecutionFilter>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>build-helper-maven-plugin</artifactId>
+                    <versionRange>[1.7,)</versionRange>
+                    <goals>
+                      <goal>reserve-network-port</goal>
+                    </goals>
+                  </pluginExecutionFilter>
+                  <action>
+                    <execute />
+                  </action>
+                </pluginExecution>
+              </pluginExecutions>
+            </lifecycleMappingMetadata>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-site-plugin</artifactId>
+          <version>3.3</version>
+          <configuration>
+            <generateReports>false</generateReports>
+            <skip>true</skip>
+            <skipDeploy>true</skipDeploy>
+          </configuration>
+          <dependencies>
+            <dependency>
+              <groupId>org.apache.maven.doxia</groupId>
+              <artifactId>doxia-module-markdown</artifactId>
+              <version>1.5</version>
+            </dependency>
+          </dependencies>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-scm-publish-plugin</artifactId>
+          <version>1.0-beta-2</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-project-info-reports-plugin</artifactId>
+          <version>2.4</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+
+  <reporting>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-project-info-reports-plugin</artifactId>
+        <!--avoid child modules from inheriting anything from the apache parent pom -->
+        <inherited>false</inherited>
+      </plugin>
+    </plugins>
+  </reporting>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.osgi</groupId>
+        <artifactId>org.osgi.core</artifactId>
+        <version>4.2.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.osgi</groupId>
+        <artifactId>org.osgi.compendium</artifactId>
+        <version>4.2.0</version>
+      </dependency>
+      <dependency>
+        <groupId>biz.aQute.bnd</groupId>
+        <artifactId>bndlib</artifactId>
+        <version>2.2.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.felix</groupId>
+        <artifactId>org.apache.felix.scr.annotations</artifactId>
+        <version>1.9.6</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.code.findbugs</groupId>
+        <artifactId>jsr305</artifactId>
+        <version>2.0.0</version>
+        <scope>provided</scope>
+      </dependency>
+      <dependency>
+        <groupId>junit</groupId>
+        <artifactId>junit</artifactId>
+        <version>4.10</version>
+      </dependency>
+      <dependency>
+        <groupId>org.mongodb</groupId>
+        <artifactId>mongo-java-driver</artifactId>
+        <version>2.11.3</version>
+      </dependency>
+      <dependency>
+        <groupId>com.google.guava</groupId>
+        <artifactId>guava</artifactId>
+        <version>15.0</version>
+      </dependency>
+      <dependency>
+        <groupId>org.easymock</groupId>
+        <artifactId>easymock</artifactId>
+        <version>3.1</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.api.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>log4j-over-slf4j</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>jcl-over-slf4j</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>jul-to-slf4j</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>ch.qos.logback</groupId>
+        <artifactId>logback-classic</artifactId>
+        <version>${logback.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.jclouds.provider</groupId>
+        <artifactId>aws-s3</artifactId>
+        <version>1.7.0</version>
+      </dependency>
+      
+    </dependencies>
+  </dependencyManagement>
+
+  <profiles>
+    <profile>
+      <id>integrationTesting</id>
+      <activation>
+        <property>
+          <name>env.OAK_INTEGRATION_TESTING</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>integration-test</goal>
+                  <goal>verify</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>pedantic</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.rat</groupId>
+            <artifactId>apache-rat-plugin</artifactId>
+            <executions>
+              <execution>
+                <phase>verify</phase>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <artifactId>maven-checkstyle-plugin</artifactId>
+            <configuration>
+              <failOnViolation>false</failOnViolation>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>findbugs-maven-plugin</artifactId>
+            <configuration>
+              <failOnError>false</failOnError>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>check</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>site-with-javadoc</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>aggregate</id>
+                <goals>
+                  <goal>aggregate</goal>
+                </goals>
+                <phase>site</phase>
+              </execution>
+            </executions>
+            <configuration>
+              <reportOutputDirectory>${basedir}/oak-doc/target/site</reportOutputDirectory>
+              <additionalparam>-notimestamp</additionalparam>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <profile>
+      <id>rdb-postgres</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.postgresql</groupId>
+          <artifactId>postgresql</artifactId>
+          <version>9.3-1100-jdbc4</version>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <!-- requires local copy of DB2 JDBC drivers -->
+      <!-- run with -Ddb2.jdbc=foldername where foldername contains the 2 JARs-->
+      <id>rdb-db2</id>
+      <dependencies>
+        <dependency>
+          <groupId>org.example</groupId>
+          <artifactId>db2</artifactId>
+          <version>1.0</version>
+          <scope>system</scope>
+          <systemPath>${db2.jdbc}/db2jcc4.jar</systemPath>
+        </dependency>
+        <dependency>
+          <groupId>org.example</groupId>
+          <artifactId>db2-license</artifactId>
+          <version>1.0</version>
+          <scope>system</scope>
+          <systemPath>${db2.jdbc}/db2jcc_license_cu.jar</systemPath>
+        </dependency>
+      </dependencies>
+    </profile>
+    <profile>
+      <id>java8</id>
+      <activation>
+        <jdk>[1.8,)</jdk>
+      </activation>
+      <properties>
+        <test.opts.memory>-Xmx512m</test.opts.memory>
+      </properties>
+    </profile>
+  </profiles>
+
+  <scm>
+    <connection>scm:svn:http://svn.apache.org/repos/asf/maven/pom/tags/jackrabbit-oak-1.0.7/oak-parent</connection>
+    <developerConnection>scm:svn:https://svn.apache.org/repos/asf/maven/pom/tags/jackrabbit-oak-1.0.7/oak-parent</developerConnection>
+    <url>http://svn.apache.org/viewvc/maven/pom/tags/jackrabbit-oak-1.0.7/oak-parent</url>
+  </scm>
+</project>

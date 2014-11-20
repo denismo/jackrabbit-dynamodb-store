@@ -513,6 +513,7 @@ public class DocumentMK implements MicroKernel {
             if (diffCache == null) {
                 diffCache = new MemoryDiffCache(this);
             }
+            return this;
         }
 
         /**
