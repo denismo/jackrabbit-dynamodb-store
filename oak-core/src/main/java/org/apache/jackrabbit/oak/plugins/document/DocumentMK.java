@@ -24,14 +24,18 @@ import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.sql.DataSource;
 
+import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.Weigher;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.mongodb.DB;
 
+import org.apache.jackrabbit.aws.ext.ds.S3DataStore;
 import org.apache.jackrabbit.mk.api.MicroKernel;
 import org.apache.jackrabbit.mk.api.MicroKernelException;
+import org.apache.jackrabbit.oak.plugins.blob.cloud.CloudBlobStore;
+import org.apache.jackrabbit.oak.plugins.document.dynamodb.DynamoDBDocumentStore;
 import org.apache.jackrabbit.oak.spi.blob.BlobStore;
 import org.apache.jackrabbit.oak.spi.blob.MemoryBlobStore;
 import org.apache.jackrabbit.oak.commons.json.JsopReader;
@@ -49,6 +53,7 @@ import org.apache.jackrabbit.oak.plugins.document.mongo.MongoDocumentStore;
 import org.apache.jackrabbit.oak.plugins.document.rdb.RDBBlobStore;
 import org.apache.jackrabbit.oak.plugins.document.rdb.RDBDocumentStore;
 import org.apache.jackrabbit.oak.stats.Clock;
+import org.jclouds.s3.blobstore.S3BlobStore;
 
 /**
  * A MicroKernel implementation that stores the data in a {@link DocumentStore}.
@@ -496,6 +501,18 @@ public class DocumentMK implements MicroKernel {
                 }
             }
             return this;
+        }
+
+        public Builder setDynamoDB(AmazonDynamoDBClient client) {
+            if (documentStore == null) {
+                documentStore = new DynamoDBDocumentStore(client);
+            }
+            if (blobStore == null) {
+                blobStore = new CloudBlobStore();
+            }
+            if (diffCache == null) {
+                diffCache = new MemoryDiffCache(this);
+            }
         }
 
         /**

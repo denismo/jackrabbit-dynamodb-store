@@ -113,6 +113,9 @@ public class DocumentNodeStoreService {
     @Property(intValue =  DEFAULT_BLOB_CACHE_SIZE)
     private static final String PROP_BLOB_CACHE_SIZE = "blobCacheSize";
 
+    @Property(boolValue = false)
+    private static final String PROP_LOGGING = "logging";
+
     /**
      * Boolean value indicating a blobStore is to be used
      */
@@ -211,6 +214,7 @@ public class DocumentNodeStoreService {
                 memoryCacheSize(cacheSize * MB).
                 offHeapCacheSize(offHeapCache * MB);
 
+        mkBuilder.setLogging(PropertiesUtil.toBoolean(context.getProperties().get(PROP_LOGGING), false));
         //Set blobstore before setting the DB
         if (blobStore != null) {
             mkBuilder.setBlobStore(blobStore);

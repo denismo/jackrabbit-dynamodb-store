@@ -70,7 +70,7 @@ public abstract class Collection<T extends Document> {
                 }
             };
 
-    private final String name;
+    public final String name;
 
     public Collection(String name) {
         this.name = name;

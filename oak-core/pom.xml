@@ -40,7 +40,11 @@
           <instructions>
             <Embed-Dependency>
               <!-- OAK-1768 TODO: embedded as short term workaround -->
-              mapdb,
+              mapdb
+<!--
+              ,aws-java-sdk,aopalliance,httpclient,httpcore,java-xmlbuilder,javax.inject,jsr250-api,kryo,
+              org.apache.jclouds.provider:aws-s3,directmemory-cache,json-simple
+-->
             </Embed-Dependency>
             <Embed-Transitive>true</Embed-Transitive>
             <Import-Package>
@@ -350,5 +354,18 @@
       <version>${project.version}</version>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk</artifactId>
+      <version>1.9.6</version>
+    </dependency>
+<!--
+    <dependency>
+      <groupId>org.apache.servicemix.bundles</groupId>
+      <artifactId>org.apache.servicemix.bundles.aws-java-sdk</artifactId>
+      <version>1.8.11_1</version>
+    </dependency>
+-->
+
   </dependencies>
 </project>

@@ -169,7 +169,7 @@ public final class UpdateOp {
      * @param property the name of the property to set.
      * @param value the new value for the property.
      */
-    <T> void max(String property, Comparable<T> value) {
+    public <T> void max(String property, Comparable<T> value) {
         Operation op = new Operation(Operation.Type.MAX, value);
         changes.put(new Key(property, null), op);
     }

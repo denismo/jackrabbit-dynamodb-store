@@ -37,7 +37,7 @@ public class LoggingDocumentStoreWrapper implements DocumentStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(LoggingDocumentStoreWrapper.class);
 
-    private static final boolean DEBUG = Boolean.parseBoolean(System.getProperty("ds.debug", "true"));
+    private static final boolean DEBUG = Boolean.parseBoolean(System.getProperty("ds.debug", "false"));
 
     final DocumentStore store;
     private boolean logThread;
