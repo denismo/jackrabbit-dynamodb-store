@@ -6,13 +6,9 @@ import com.amazonaws.regions.Region;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient;
 import com.amazonaws.services.dynamodbv2.model.*;
-import com.google.common.collect.Collections2;
-import com.google.common.collect.Maps;
 import org.apache.jackrabbit.mk.api.MicroKernelException;
-import org.apache.jackrabbit.oak.cache.CacheStats;
 import org.apache.jackrabbit.oak.plugins.document.*;
 import org.apache.jackrabbit.oak.plugins.document.Collection;
-import org.apache.jackrabbit.oak.plugins.document.cache.CachingDocumentStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,19 +17,18 @@ import javax.annotation.Nonnull;
 import java.util.*;
 
 /**
- * Collection is table.
- * Documents map to nodes.
- * Key is DynamoDB key.
  * User: Denis Mikhalkin
  * Date: 13/11/2014
  * Time: 11:06 PM
  * TODO: Implement initialization service
  * TODO: Add _modified index
  * TODO: Handle store.query(Collection.NODES, NodeDocument.MIN_ID_VALUE, NodeDocument.MAX_ID_VALUE, NodeDocument.MODIFIED_IN_SECS,  NodeDocument.getModifiedInSecs(startTime), Integer.MAX_VALUE);
+ *       - this means handling queries across levels (currently I only support queries within one level)
  */
 public class DynamoDBDocumentStore implements DocumentStore {
 
     private static final Logger LOG = LoggerFactory.getLogger(DynamoDBDocumentStore.class);
+    private static final String MODIFIED = "_modified";
 
     private final Comparator<Revision> comparator = StableRevisionComparator.REVERSE;
 
@@ -50,7 +45,12 @@ public class DynamoDBDocumentStore implements DocumentStore {
     }
 
     private void init() {
-        ensureTableExists(collectionToTable(Collection.NODES));
+        ensureTableExists(collectionToTable(Collection.NODES)/*,
+                new GlobalSecondaryIndex()
+                        .withIndexName(MODIFIED)
+                        .withProjection(new Projection().withProjectionType(ProjectionType.KEYS_ONLY))
+                        .withKeySchema(new KeySchemaElement(MODIFIED, KeyType.HASH))
+                        .withProvisionedThroughput(new ProvisionedThroughput(1L, 1L))*/);
         ensureTableExists(collectionToTable(Collection.CLUSTER_NODES));
         ensureTableExists(collectionToTable(Collection.SETTINGS));
     }
@@ -60,14 +60,24 @@ public class DynamoDBDocumentStore implements DocumentStore {
         init();
     }
 
-    private void ensureTableExists(String tableName) {
+    private void ensureTableExists(String tableName, GlobalSecondaryIndex... indexes) {
         try {
             dynamoDB.describeTable(tableName);
         } catch (ResourceNotFoundException rnfe) {
             // Table does not exist
-            dynamoDB.createTable(new CreateTableRequest(tableName, Arrays.asList(new KeySchemaElement(PATH, KeyType.HASH), new KeySchemaElement(NAME, KeyType.RANGE)))
+            CreateTableRequest createTableRequest = new CreateTableRequest(tableName, Arrays.asList(new KeySchemaElement(PATH, KeyType.HASH), new KeySchemaElement(NAME, KeyType.RANGE)))
                     .withAttributeDefinitions(new AttributeDefinition(PATH, ScalarAttributeType.S), new AttributeDefinition(NAME, ScalarAttributeType.S))
-                    .withProvisionedThroughput(new ProvisionedThroughput(1L,1L)));
+                    .withProvisionedThroughput(new ProvisionedThroughput(1L, 1L));
+/*
+            if ("nodes".equals(tableName)) {
+                // TODO Cleanup hard-coded attribute
+                createTableRequest.getAttributeDefinitions().add(new AttributeDefinition(MODIFIED, ScalarAttributeType.N));
+            }
+*/
+            if (indexes != null && indexes.length > 0) {
+                createTableRequest.setGlobalSecondaryIndexes(Arrays.asList(indexes));
+            }
+            dynamoDB.createTable(createTableRequest);
         } catch (AmazonClientException e) {
             LOG.error("Exception checking Nodes table", e);
         }
@@ -75,10 +85,14 @@ public class DynamoDBDocumentStore implements DocumentStore {
 
     @Override
     public <T extends Document> T find(Collection<T> collection, String key) {
+        log("find", collectionToTable(collection), key);
         GetItemResult res = dynamoDB.getItem(new GetItemRequest(collectionToTable(collection), keyMap(key)));
         if (res != null) {
-            return itemToDocument(collection, res.getItem());
+            T t = itemToDocument(collection, res.getItem());
+            log("find ->", t);
+            return t;
         }
+        log("find ->", "{}");
         return null;
     }
 
@@ -181,41 +195,70 @@ public class DynamoDBDocumentStore implements DocumentStore {
 
     @Nonnull
     @Override
-    public <T extends Document> List<T> query(Collection<T> collection, String fromKey, String toKey, String indexedProperty, long startValue, int limit) {
+    public <T extends Document> List<T> query(Collection<T> collection,
+                                              String fromKey,
+                                              String toKey,
+                                              String indexedProperty,
+                                              long startValue,
+                                              int limit) {
+        log("query", collectionToTable(collection), fromKey, toKey, indexedProperty, startValue, limit);
         // fromKey, toKey - assumes "key" is ordered sequence
         // indexedProperty - assumes ordered property, startValue refers to its value and above. Can be MODIFIED_IN_SECS, HAS_BINARY_FLAG
-        QueryRequest request = new QueryRequest(collectionToTable(collection));
-        request.addKeyConditionsEntry(PATH, new Condition().withAttributeValueList(getHashKey(fromKey)).withComparisonOperator(ComparisonOperator.EQ));
-        if (!getHashKey(fromKey).equals(getHashKey(toKey))) {
-            request.addKeyConditionsEntry(NAME, new Condition().withAttributeValueList(getRangeKey(fromKey)).withComparisonOperator(ComparisonOperator.GE));
-        } else {
-            request.addKeyConditionsEntry(NAME, new Condition().withAttributeValueList(getRangeKey(fromKey), getRangeKey(toKey)).withComparisonOperator(ComparisonOperator.BETWEEN));
-        }
-        if (indexedProperty != null) {
-            // Assumes this kind of query will only ever run using a local index
-            request.addKeyConditionsEntry(indexedProperty, new Condition().withAttributeValueList(new AttributeValue(String.valueOf(startValue))).withComparisonOperator(ComparisonOperator.GE));
-            request.setIndexName(indexedProperty+"Index");
-        }
-        request.setSelect(Select.ALL_ATTRIBUTES);
-        request.setLimit(limit);
-        QueryResult result = dynamoDB.query(request);
-        if (result != null) {
-            ArrayList<T> list = new ArrayList<T>();
-            for (Map<String, AttributeValue> item : result.getItems()) {
-                list.add((T)itemToDocument(collection, item));
+        try {
+            QueryRequest request = new QueryRequest(collectionToTable(collection));
+            request.addKeyConditionsEntry(PATH, new Condition().withAttributeValueList(getHashKey(fromKey)).withComparisonOperator(ComparisonOperator.EQ));
+            if (!getHashKey(fromKey).equals(getHashKey(toKey))) {
+                request.addKeyConditionsEntry(NAME, new Condition().withAttributeValueList(getRangeKey(fromKey)).withComparisonOperator(ComparisonOperator.GE));
+            } else {
+                request.addKeyConditionsEntry(NAME, new Condition().withAttributeValueList(getRangeKey(fromKey), getRangeKey(toKey)).withComparisonOperator(ComparisonOperator.BETWEEN));
             }
-            return list;
+            if (indexedProperty != null) {
+                if (fromKey.equals(NodeDocument.MIN_ID_VALUE) && toKey.equals(NodeDocument.MAX_ID_VALUE)) {
+                    // Global index
+                    if (MODIFIED.equals(indexedProperty)) {
+                        return Collections.emptyList();
+                        // TODO For now, we don't support modified queries as it is a corner case for unclean shutdown
+//                        request.getKeyConditions().clear();
+//                        request.addKeyConditionsEntry(indexedProperty, new Condition().withAttributeValueList(new AttributeValue(String.valueOf(startValue))).withComparisonOperator(ComparisonOperator.GE));
+//                        request.setIndexName(MODIFIED);
+                    } else {
+                        throw new MicroKernelException("Unsupported index: fromKey=" + fromKey + ", toKey=" + toKey + ", indexedProperty: " + indexedProperty);
+                    }
+                } else {
+                    throw new MicroKernelException("Unsupported index: fromKey=" + fromKey + ", toKey=" + toKey + ", indexedProperty: " + indexedProperty);
+                    // Assumes this kind of query will only ever run using a local index
+    //                request.addKeyConditionsEntry(indexedProperty, new Condition().withAttributeValueList(new AttributeValue(String.valueOf(startValue))).withComparisonOperator(ComparisonOperator.GE));
+    //                request.setIndexName(indexedProperty+"Index");
+                }
+            }
+            request.setSelect(Select.ALL_ATTRIBUTES);
+            request.setLimit(limit);
+            QueryResult result = dynamoDB.query(request);
+            if (result != null) {
+                ArrayList<T> list = new ArrayList<T>();
+                for (Map<String, AttributeValue> item : result.getItems()) {
+                    list.add((T)itemToDocument(collection, item));
+                }
+                log("query -> ", list);
+                return list;
+            }
+        } catch (RuntimeException e) {
+            LOG.error(String.format("query(%s, %s, %s, %s)", collectionToTable(collection), fromKey, toKey, indexedProperty), e);
+            throw e;
         }
+        log("query -> ", "{}");
         return Collections.emptyList();
     }
 
     @Override
     public <T extends Document> void remove(Collection<T> collection, String key) {
+        log("remove", collectionToTable(collection), key);
         dynamoDB.deleteItem(new DeleteItemRequest(collectionToTable(collection), keyMap(key)));
     }
 
     @Override
     public <T extends Document> void remove(Collection<T> collection, List<String> keys) {
+        log("remove", collectionToTable(collection), keys);
         for (String key : keys) {
             remove(collection, key);
         }
@@ -319,7 +362,12 @@ public class DynamoDBDocumentStore implements DocumentStore {
             switch (op.type) {
                 case SET:
                 case SET_MAP_ENTRY:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
+                    if (op.value == null) {
+                        // null in DynamoDB means DELETE
+                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(null, AttributeAction.DELETE));
+                    } else {
+                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
+                    }
                     break;
                 case MAX:
                     request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
@@ -351,6 +399,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
 
     @Override
     public <T extends Document> boolean create(Collection<T> collection, List<UpdateOp> list) {
+        log("create", collectionToTable(collection), list);
         BatchWriteItemRequest request = new BatchWriteItemRequest();
         ArrayList<WriteRequest> writes = new ArrayList<WriteRequest>();
         request.addRequestItemsEntry(collectionToTable(collection), writes);
@@ -424,11 +473,12 @@ public class DynamoDBDocumentStore implements DocumentStore {
             return new AttributeValue().withN(String.valueOf(value));
         } else if (value instanceof Boolean) {
             return new AttributeValue().withBOOL((Boolean)value);
-        } else throw new MicroKernelException("Unsupported attribute value " + value + "(" + value.getClass() + ")");
+        } else throw new MicroKernelException("Unsupported attribute value " + value + "(" + (value != null ? value.getClass() : "") + ")");
     }
 
     @Override
     public <T extends Document> void update(Collection<T> collection, List<String> keys, UpdateOp updateOp) {
+        log("update", collectionToTable(collection), keys, updateOp);
         UpdateItemRequest request = getUpdateItemRequest(collection, updateOp, false, true);
         try {
             for (String key : keys) {
@@ -441,11 +491,13 @@ public class DynamoDBDocumentStore implements DocumentStore {
 
     @Override
     public <T extends Document> T createOrUpdate(Collection<T> collection, UpdateOp updateOp) {
+        log("createOrUpdate", collectionToTable(collection), updateOp);
         return findAndModify(collection, updateOp, true, false);
     }
 
     @Override
     public <T extends Document> T findAndUpdate(Collection<T> collection, UpdateOp updateOp) {
+        log("findAndUpdate", collectionToTable(collection), updateOp);
         return findAndModify(collection, updateOp, false, true);
     }
 
@@ -472,5 +524,15 @@ public class DynamoDBDocumentStore implements DocumentStore {
     @Override
     public void setReadWriteMode(String s) {
 
+    }
+    private static void log(String message, Object... args) {
+        if (LOG.isInfoEnabled()) {
+            String argList = Arrays.toString(args);
+            if (argList.length() > 10000) {
+                argList = argList.length() + ": " + argList;
+            }
+            LOG.info(message + argList);
+            System.err.println(message + argList);
+        }
     }
 }

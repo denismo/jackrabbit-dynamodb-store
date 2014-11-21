@@ -19,6 +19,7 @@
 package org.apache.jackrabbit.oak.api;
 
 import static junit.framework.Assert.assertEquals;
+import static junit.framework.Assert.assertTrue;
 
 import java.util.Arrays;
 import java.util.HashSet;
@@ -59,6 +60,11 @@ public class QueryTest {
         t.addChild("node2").setProperty("jcr:primaryType", "nt:base");
         t.addChild("node3").setProperty("jcr:primaryType", "nt:base");
         r.commit();
+
+        Tree testTree = r.getTree("/test");
+        assertTrue(testTree.exists());
+        Tree node2 = testTree.getChild("node2");
+        assertTrue(node2.exists());
 
         ContentSession s2 = repository.login(null, null);
         Root r2 = s2.getLatestRoot();
