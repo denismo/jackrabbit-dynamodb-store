@@ -28,6 +28,7 @@ import java.util.Set;
 import javax.jcr.query.Query;
 
 import org.apache.jackrabbit.oak.Oak;
+import org.apache.jackrabbit.oak.plugins.document.DocumentMK;
 import org.apache.jackrabbit.oak.plugins.nodetype.write.InitialContent;
 import org.apache.jackrabbit.oak.spi.security.OpenSecurityProvider;
 import org.junit.After;
@@ -43,7 +44,9 @@ public class QueryTest {
 
     @Before
     public void setUp() {
-        repository = new Oak().with(new OpenSecurityProvider()).with(new InitialContent()).createContentRepository();
+        repository = new Oak(new DocumentMK.Builder().getNodeStore())
+                .with(new OpenSecurityProvider()).with(new InitialContent())
+                .createContentRepository();
     }
 
     @After

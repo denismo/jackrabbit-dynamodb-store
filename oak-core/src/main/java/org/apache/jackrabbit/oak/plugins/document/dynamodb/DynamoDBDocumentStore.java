@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.CheckForNull;
 import javax.annotation.Nonnull;
+import javax.print.Doc;
 import java.util.*;
 
 /**
@@ -350,8 +351,17 @@ public class DynamoDBDocumentStore implements DocumentStore {
                 .addKeyEntry(PATH, getHashKey(updateOp.getId()))
                 .addKeyEntry(NAME, getRangeKey(updateOp.getId()))
                 .withReturnValues(ReturnValue.ALL_OLD)
-                .addAttributeUpdatesEntry(Document.MOD_COUNT, new AttributeValueUpdate(new AttributeValue().withN("1"), AttributeAction.ADD));
+                /*.addAttributeUpdatesEntry(Document.MOD_COUNT, new AttributeValueUpdate(new AttributeValue().withN("1"), AttributeAction.ADD))*/;
 
+        StringBuilder sets = new StringBuilder("SET ");
+        StringBuilder deletes = new StringBuilder("DELETE ");
+        StringBuilder adds = new StringBuilder("ADD #att0 :val0, ");
+        StringBuilder removes = new StringBuilder("REMOVE ");
+
+        ArrayList<String> names = new ArrayList<String>();
+        names.add(Document.MOD_COUNT);
+        ArrayList<AttributeValue> values = new ArrayList<AttributeValue>();
+        values.add(new AttributeValue().withN("1"));
         for (Map.Entry<UpdateOp.Key, UpdateOp.Operation> entry : updateOp.getChanges().entrySet()) {
             UpdateOp.Key k = entry.getKey();
             if (k.getName().equals(Document.ID) || k.getName().equals(Document.MOD_COUNT)) {
@@ -361,24 +371,65 @@ public class DynamoDBDocumentStore implements DocumentStore {
             UpdateOp.Operation op = entry.getValue();
             switch (op.type) {
                 case SET:
-                case SET_MAP_ENTRY:
                     if (op.value == null) {
                         // null in DynamoDB means DELETE
-                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(null, AttributeAction.DELETE));
+//                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(null, AttributeAction.DELETE));
+                        deletes.append("#att").append(names.size()).append(", ");
+                        names.add(k.toString());
                     } else {
-                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
+                        sets.append("#att").append(names.size()).append(" = ").append(":val").append(values.size()).append(", ");
+                        values.add(attributeValueForObject(op.value));
+                        names.add(k.toString());
+//                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
                     }
                     break;
+                case SET_MAP_ENTRY: {
+                    Revision r = k.getRevision();
+                    if (r == null) {
+                        throw new IllegalStateException(
+                                "SET_MAP_ENTRY must not have null revision");
+                    }
+                    if (op.value == null) {
+                        // null in DynamoDB means DELETE
+//                        request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
+//                                .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
+                        removes.append(k.toString()).append(", ");
+//                        names.add(k.toString());
+                    } else {
+//                        request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
+//                                .withM(Collections.singletonMap(r.toString(), attributeValueForObject(op.value))), AttributeAction.PUT));
+                        sets.append(k.toString()).append(" = ").append(":val").append(values.size()).append(", ");
+                        values.add(attributeValueForObject(op.value));
+//                        names.add(k.toString());
+                    }
+                    break;
+                }
                 case MAX:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
+//                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
+                    sets.append(k.toString()).append(" = ").append(":val").append(values.size()).append(", ");
+                    values.add(attributeValueForObject(op.value));
+//                    names.add(k.toString());
+
                     request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(new AttributeValue().withN(op.value.toString())).withComparisonOperator(ComparisonOperator.LE));
                     break;
                 case INCREMENT:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.ADD));
+//                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.ADD));
+                    adds.append("#att").append(names.size()).append(' ').append(":val").append(values.size()).append(", ");
+                    names.add(k.toString());
+                    values.add(new AttributeValue().withN(op.value.toString()));
                     break;
-                case REMOVE_MAP_ENTRY:
-                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(op.value == null ? null : attributeValueForObject(op.value), AttributeAction.DELETE));
+                case REMOVE_MAP_ENTRY: {
+                    Revision r = k.getRevision();
+                    if (r == null) {
+                        throw new IllegalStateException(
+                                "SET_MAP_ENTRY must not have null revision");
+                    }
+//                    request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
+//                            .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
+                    removes.append(k.toString()).append(", ");
+//                    names.add(k.toString());
                     break;
+                }
                 case CONTAINS_MAP_ENTRY:
                     if (checkConditions) {
                         if (Boolean.TRUE.equals(op.value)) {
@@ -390,6 +441,36 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     break;
             }
         }
+        StringBuilder expression = new StringBuilder();
+        if (deletes.length() > "delete ".length()) {
+            deletes.setLength(deletes.length()-2);
+            expression.append(deletes).append(' ');
+        }
+        if (sets.length() > "set ".length()) {
+            sets.setLength(sets.length() - 2);
+            expression.append(sets).append(' ');
+        }
+        if (adds.length() > "add ".length()) {
+            adds.setLength(adds.length()-2);
+            expression.append(adds).append(' ');
+        }
+        if (removes.length() > "remove ".length()) {
+            removes.setLength(removes.length()-2);
+            expression.append(removes);
+        }
+        if (expression.length() > 0) request.setUpdateExpression(expression.toString());
+
+        Map<String, String> convertedNames = new HashMap<String, String>();
+        for (String name : names) {
+            convertedNames.put("#att"+convertedNames.size(), name);
+        }
+        request.setExpressionAttributeNames(convertedNames);
+        Map<String, AttributeValue> convertedValues = new HashMap<String, AttributeValue>();
+        for (AttributeValue value : values) {
+            convertedValues.put(":val" + convertedValues.size(), value);
+        }
+        request.setExpressionAttributeValues(convertedValues);
+
         // If creation is not allowed, we add a condition for "should exist"
         if (!upsert) {
             request.addExpectedEntry(PATH, new ExpectedAttributeValue(getHashKey(updateOp.getId())));
