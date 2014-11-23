@@ -362,6 +362,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
         names.add(Document.MOD_COUNT);
         ArrayList<AttributeValue> values = new ArrayList<AttributeValue>();
         values.add(new AttributeValue().withN("1"));
+        StringBuilder expected = new StringBuilder();
         for (Map.Entry<UpdateOp.Key, UpdateOp.Operation> entry : updateOp.getChanges().entrySet()) {
             UpdateOp.Key k = entry.getKey();
             if (k.getName().equals(Document.ID) || k.getName().equals(Document.MOD_COUNT)) {
@@ -374,7 +375,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     if (op.value == null) {
                         // null in DynamoDB means DELETE
 //                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(null, AttributeAction.DELETE));
-                        deletes.append("#att").append(names.size()).append(", ");
+                        removes.append("#att").append(names.size()).append(", ");
                         names.add(k.toString());
                     } else {
                         sets.append("#att").append(names.size()).append(" = ").append(":val").append(values.size()).append(", ");
@@ -393,12 +394,15 @@ public class DynamoDBDocumentStore implements DocumentStore {
                         // null in DynamoDB means DELETE
 //                        request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
 //                                .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
-                        removes.append(k.toString()).append(", ");
-//                        names.add(k.toString());
+                        removes.append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(", ");
+                        names.add(k.getName());
+                        names.add(r.toString());
                     } else {
 //                        request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
 //                                .withM(Collections.singletonMap(r.toString(), attributeValueForObject(op.value))), AttributeAction.PUT));
-                        sets.append(k.toString()).append(" = ").append(":val").append(values.size()).append(", ");
+                        sets.append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(" = ").append(":val").append(values.size()).append(", ");
+                        names.add(k.getName());
+                        names.add(r.toString());
                         values.add(attributeValueForObject(op.value));
 //                        names.add(k.toString());
                     }
@@ -406,11 +410,13 @@ public class DynamoDBDocumentStore implements DocumentStore {
                 }
                 case MAX:
 //                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
-                    sets.append(k.toString()).append(" = ").append(":val").append(values.size()).append(", ");
+                    sets.append("#att").append(names.size()).append(" = ").append(":val").append(values.size()).append(", ");
                     values.add(attributeValueForObject(op.value));
-//                    names.add(k.toString());
 
-                    request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(new AttributeValue().withN(op.value.toString())).withComparisonOperator(ComparisonOperator.LE));
+//                    request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(new AttributeValue().withN(op.value.toString())).withComparisonOperator(ComparisonOperator.LE));
+                    expected.append(" and ").append("#att").append(names.size()).append(" <= ").append(":val").append(values.size());
+                    names.add(k.toString());
+                    values.add(new AttributeValue().withN(op.value.toString()));
                     break;
                 case INCREMENT:
 //                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.ADD));
@@ -426,17 +432,27 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     }
 //                    request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
 //                            .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
-                    removes.append(k.toString()).append(", ");
-//                    names.add(k.toString());
+                    removes.append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(", ");
+                    names.add(k.getName());
+                    names.add(r.toString());
                     break;
                 }
                 case CONTAINS_MAP_ENTRY:
                     if (checkConditions) {
-                        if (Boolean.TRUE.equals(op.value)) {
-                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(true));
-                        } else {
-                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(false));
+                        Revision r = k.getRevision();
+                        if (r == null) {
+                            throw new IllegalStateException(
+                                    "SET_MAP_ENTRY must not have null revision");
                         }
+                        expected.append(" and ").append(Boolean.TRUE.equals(op.value) ? "attribute_exists(" : "attribute_not_exists(").
+                                append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(")");
+                        names.add(k.getName());
+                        names.add(r.toString());
+//                        if (Boolean.TRUE.equals(op.value)) {
+//                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(true));
+//                        } else {
+//                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(false));
+//                        }
                     }
                     break;
             }
@@ -460,6 +476,13 @@ public class DynamoDBDocumentStore implements DocumentStore {
         }
         if (expression.length() > 0) request.setUpdateExpression(expression.toString());
 
+        // If creation is not allowed, we add a condition for "should exist"
+        if (!upsert) {
+            expected.append(" and ").append("attribute_exists(").append("#att").append(names.size()).append(")");
+            names.add(PATH);
+//            request.addExpectedEntry(PATH, new ExpectedAttributeValue(getHashKey(updateOp.getId())));
+        }
+
         Map<String, String> convertedNames = new HashMap<String, String>();
         for (String name : names) {
             convertedNames.put("#att"+convertedNames.size(), name);
@@ -471,9 +494,9 @@ public class DynamoDBDocumentStore implements DocumentStore {
         }
         request.setExpressionAttributeValues(convertedValues);
 
-        // If creation is not allowed, we add a condition for "should exist"
-        if (!upsert) {
-            request.addExpectedEntry(PATH, new ExpectedAttributeValue(getHashKey(updateOp.getId())));
+        if (expected.length() > 0) {
+            expected.delete(0, 5);
+            request.setConditionExpression(expected.toString());
         }
         return request;
     }
