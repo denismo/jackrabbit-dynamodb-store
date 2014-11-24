@@ -152,8 +152,20 @@ public class DynamoDBDocumentStore implements DocumentStore {
 
         T doc = collection.newDocument(this);
         for (Map.Entry<String, AttributeValue> entry : item.entrySet()) {
-            if (PATH.equals(entry.getKey()) || NAME.equals(entry.getKey())) continue;
-            doc.put(entry.getKey(), attrToObject(entry.getValue()));
+            String key = entry.getKey();
+            if (PATH.equals(key) || NAME.equals(key)) continue;
+            if (key.contains(".")) {
+                String name = key.substring(0, key.indexOf('.'));
+                String revision = key.substring(key.indexOf('.')+1);
+                Map<Revision, Object> map = (Map<Revision, Object>) doc.get(name);
+                if (map == null) {
+                    map = new TreeMap<Revision, Object>(comparator);
+                    doc.put(name, map);
+                }
+                map.put(Revision.fromString(revision), attrToObject(entry.getValue()));
+            } else {
+                doc.put(key, attrToObject(entry.getValue()));
+            }
         }
         return doc;
     }
@@ -371,6 +383,14 @@ public class DynamoDBDocumentStore implements DocumentStore {
             }
             UpdateOp.Operation op = entry.getValue();
             switch (op.type) {
+                case SET_MAP_ENTRY: {
+                    Revision r = k.getRevision();
+                    if (r == null) {
+                        throw new IllegalStateException(
+                                "SET_MAP_ENTRY must not have null revision");
+                    }
+                }
+                // Fallthrough
                 case SET:
                     if (op.value == null) {
                         // null in DynamoDB means DELETE
@@ -384,6 +404,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
 //                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
                     }
                     break;
+/*
                 case SET_MAP_ENTRY: {
                     Revision r = k.getRevision();
                     if (r == null) {
@@ -408,6 +429,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     }
                     break;
                 }
+*/
                 case MAX:
 //                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
                     sets.append("#att").append(names.size()).append(" = ").append(":val").append(values.size()).append(", ");
@@ -432,12 +454,13 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     }
 //                    request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
 //                            .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
-                    removes.append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(", ");
-                    names.add(k.getName());
-                    names.add(r.toString());
+                    removes.append("#att").append(names.size())./*append(".").append("#att").append(names.size()+1).*/append(", ");
+//                    names.add(k.getName());
+//                    names.add(r.toString());
+                    names.add(k.toString());
                     break;
                 }
-                case CONTAINS_MAP_ENTRY:
+                case CONTAINS_MAP_ENTRY: {
                     if (checkConditions) {
                         Revision r = k.getRevision();
                         if (r == null) {
@@ -445,9 +468,10 @@ public class DynamoDBDocumentStore implements DocumentStore {
                                     "SET_MAP_ENTRY must not have null revision");
                         }
                         expected.append(" and ").append(Boolean.TRUE.equals(op.value) ? "attribute_exists(" : "attribute_not_exists(").
-                                append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(")");
-                        names.add(k.getName());
-                        names.add(r.toString());
+                                append("#att").append(names.size())./*append(".").append("#att").append(names.size()+1).*/append(")");
+//                        names.add(k.getName());
+//                        names.add(r.toString());
+                        names.add(k.toString());
 //                        if (Boolean.TRUE.equals(op.value)) {
 //                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(true));
 //                        } else {
@@ -455,6 +479,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
 //                        }
                     }
                     break;
+                }
             }
         }
         StringBuilder expression = new StringBuilder();
@@ -538,12 +563,20 @@ public class DynamoDBDocumentStore implements DocumentStore {
             UpdateOp.Operation op = entry.getValue();
             seenModCount = seenModCount || k.getName().equals(Document.MOD_COUNT);
             switch (op.type) {
+                case SET_MAP_ENTRY:
+                    Revision r = k.getRevision();
+                    if (r == null) {
+                        throw new IllegalStateException(
+                                "SET_MAP_ENTRY must not have null revision");
+                    }
+                    // Fallthrough
                 case SET:
                 case MAX:
                 case INCREMENT: {
                     request.addItemEntry(k.toString(), attributeValueForObject(op.value));
                     break;
                 }
+/*
                 case SET_MAP_ENTRY: {
                     Revision r = k.getRevision();
                     if (r == null) {
@@ -554,6 +587,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
                             .withM(Collections.singletonMap(r.toString(), attributeValueForObject(op.value))));
                     break;
                 }
+*/
                 case REMOVE_MAP_ENTRY:
                     // nothing to do for new entries
                     break;
@@ -567,8 +601,22 @@ public class DynamoDBDocumentStore implements DocumentStore {
         }
         request.addItemEntry(PATH, getHashKey(update.getId()));
         request.addItemEntry(NAME, getRangeKey(update.getId()));
+
+/*
+        if (collection == Collection.NODES) {
+            addEmptyMap(request, "_lastRev", "_commitRoot", "_deleted", "_revisions", "_collisions");
+        }
+*/
+
         return request;
     }
+
+    private void addEmptyMap(PutRequest request, String ... names) {
+        for (String name: names) {
+            if (!request.getItem().containsKey(name)) request.addItemEntry(name, new AttributeValue().withM(Collections.<String, AttributeValue>emptyMap()));
+        }
+    }
+
 
     private AttributeValue attributeValueForObject(Object value) {
         if (value instanceof String) {

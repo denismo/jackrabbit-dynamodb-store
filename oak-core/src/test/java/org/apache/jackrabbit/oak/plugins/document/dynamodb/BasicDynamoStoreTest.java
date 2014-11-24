@@ -43,6 +43,7 @@ public class BasicDynamoStoreTest {
                 .setDynamoDB(dynamodb)
                 .open().getNodeStore();
         repository = new Oak(store)
+                .with(new InitialContent())
                 .with(new OpenSecurityProvider())
                 .createContentRepository();
     }
