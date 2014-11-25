@@ -38,6 +38,7 @@ public abstract class OakBaseTest {
                 {NodeStoreFixture.MONGO_MK},
                 {NodeStoreFixture.MONGO_NS},
                 {NodeStoreFixture.SEGMENT_MK},
+                {NodeStoreFixture.DYNAMODB}
         };
         return Arrays.asList(fixtures);
     }

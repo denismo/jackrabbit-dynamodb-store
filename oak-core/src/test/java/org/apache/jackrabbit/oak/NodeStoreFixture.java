@@ -21,11 +21,14 @@ package org.apache.jackrabbit.oak;
 import java.io.Closeable;
 import java.io.IOException;
 
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient;
 import org.apache.jackrabbit.mk.api.MicroKernel;
 import org.apache.jackrabbit.mk.core.MicroKernelImpl;
 import org.apache.jackrabbit.oak.kernel.KernelNodeStore;
 import org.apache.jackrabbit.oak.plugins.document.DocumentMK;
 import org.apache.jackrabbit.oak.plugins.document.DocumentNodeStore;
+import org.apache.jackrabbit.oak.plugins.document.dynamodb.DynamoDBStoreBaseTest;
 import org.apache.jackrabbit.oak.plugins.segment.SegmentNodeStore;
 import org.apache.jackrabbit.oak.plugins.segment.memory.MemoryStore;
 import org.apache.jackrabbit.oak.spi.state.NodeStore;
@@ -36,6 +39,28 @@ import static org.apache.jackrabbit.oak.kernel.KernelNodeStore.DEFAULT_CACHE_SIZ
  * NodeStore fixture for parametrized tests.
  */
 public abstract class NodeStoreFixture {
+
+    public static final NodeStoreFixture DYNAMODB = new NodeStoreFixture() {
+        @Override
+        public String toString() {
+            return "DynamoDB Fixture";
+        }
+
+        @Override
+        public NodeStore createNodeStore() {
+            AmazonDynamoDBClient dynamodb = new AmazonDynamoDBClient(new DefaultAWSCredentialsProviderChain());
+            dynamodb.setEndpoint("http://localhost:8000");
+            DynamoDBStoreBaseTest.performReset(true, dynamodb);
+            return new DocumentMK.Builder()
+                    .setDynamoDB(dynamodb)
+                    .open().getNodeStore();
+        }
+
+        @Override
+        public void dispose(NodeStore nodeStore) {
+        }
+    };
+
 
     public static final NodeStoreFixture SEGMENT_MK = new NodeStoreFixture() {
         @Override

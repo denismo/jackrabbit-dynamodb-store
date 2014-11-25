@@ -32,6 +32,7 @@ import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.plugins.commit.DefaultConflictHandler;
+import org.apache.jackrabbit.oak.plugins.document.dynamodb.DynamoDBStoreBaseTest;
 import org.apache.jackrabbit.oak.spi.security.OpenSecurityProvider;
 import org.junit.After;
 import org.junit.Before;
@@ -47,10 +48,17 @@ public class DefaultConflictHandlerTheirsTest {
 
     @Before
     public void setUp() throws CommitFailedException {
-        ContentSession session = new Oak()
-                .with(new OpenSecurityProvider())
-                .with(DefaultConflictHandler.THEIRS)
-                .createContentSession();
+        ContentSession session;
+        if (DynamoDBStoreBaseTest.isDynamoDBStore()){
+            session = DynamoDBStoreBaseTest.createOak(true)
+                    .with(DefaultConflictHandler.THEIRS)
+                    .createContentSession();
+        } else {
+            session = new Oak()
+                    .with(new OpenSecurityProvider())
+                    .with(DefaultConflictHandler.THEIRS)
+                    .createContentSession();
+        }
 
         // Add test content
         Root root = session.getLatestRoot();

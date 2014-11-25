@@ -9,6 +9,8 @@ import com.amazonaws.services.dynamodbv2.model.*;
 import org.apache.jackrabbit.mk.api.MicroKernelException;
 import org.apache.jackrabbit.oak.plugins.document.*;
 import org.apache.jackrabbit.oak.plugins.document.Collection;
+import org.apache.jackrabbit.oak.spi.state.NodeStore;
+import org.apache.jackrabbit.value.LongValue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -154,6 +156,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
         for (Map.Entry<String, AttributeValue> entry : item.entrySet()) {
             String key = entry.getKey();
             if (PATH.equals(key) || NAME.equals(key)) continue;
+            AttributeValue value = entry.getValue();
             if (key.contains(".")) {
                 String name = key.substring(0, key.indexOf('.'));
                 String revision = key.substring(key.indexOf('.')+1);
@@ -162,17 +165,33 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     map = new TreeMap<Revision, Object>(comparator);
                     doc.put(name, map);
                 }
-                map.put(Revision.fromString(revision), attrToObject(entry.getValue()));
+                map.put(Revision.fromString(revision), attrToObject(value));
             } else {
-                doc.put(key, attrToObject(entry.getValue()));
+                if ("_modified".equals(key)) {
+                    doc.put(key, longMax(value.getNS()));
+                } else {
+                    doc.put(key, attrToObject(value));
+                }
             }
         }
         return doc;
     }
 
+    private long longMax(java.util.Collection<String> values) {
+        long max = Long.MIN_VALUE;
+        for (String value : values) {
+            if (Double.valueOf(value) > max) max = Double.valueOf(value).longValue();
+        }
+        return max;
+    }
+
     private Object attrToObject(AttributeValue value) {
         if (value == null) {
             return null;
+        }
+        if (value.getNULL() != null) {
+            if (value.isNULL()) return null;
+            throw new MicroKernelException("Unexpected NULL value: false");
         }
         if (value.getBOOL() != null) {
             return value.getBOOL();
@@ -295,7 +314,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
             return itemToDocument(collection, result.getAttributes());
         } catch (ConditionalCheckFailedException cf) {
             LOG.error("Conditional check violation for " + updateOp.getId() + " during findAndModify", cf);
-            return handleMaxUpdate(collection, updateOp, upsert, checkConditions, cf);
+            throw new MicroKernelException(cf);
         } catch (ResourceNotFoundException rnf) {
             LOG.error("Resource not found for " + updateOp.getId() + " during findAndModify", rnf);
             throw new MicroKernelException(rnf);
@@ -392,56 +411,27 @@ public class DynamoDBDocumentStore implements DocumentStore {
                 }
                 // Fallthrough
                 case SET:
-                    if (op.value == null) {
-                        // null in DynamoDB means DELETE
-//                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(null, AttributeAction.DELETE));
-                        removes.append("#att").append(names.size()).append(", ");
-                        names.add(k.toString());
-                    } else {
-                        sets.append("#att").append(names.size()).append(" = ").append(":val").append(values.size()).append(", ");
-                        values.add(attributeValueForObject(op.value));
-                        names.add(k.toString());
-//                        request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(attributeValueForObject(op.value), AttributeAction.PUT));
-                    }
-                    break;
-/*
-                case SET_MAP_ENTRY: {
-                    Revision r = k.getRevision();
-                    if (r == null) {
-                        throw new IllegalStateException(
-                                "SET_MAP_ENTRY must not have null revision");
-                    }
-                    if (op.value == null) {
-                        // null in DynamoDB means DELETE
-//                        request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
-//                                .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
-                        removes.append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(", ");
-                        names.add(k.getName());
-                        names.add(r.toString());
-                    } else {
-//                        request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
-//                                .withM(Collections.singletonMap(r.toString(), attributeValueForObject(op.value))), AttributeAction.PUT));
-                        sets.append("#att").append(names.size()).append(".").append("#att").append(names.size()+1).append(" = ").append(":val").append(values.size()).append(", ");
-                        names.add(k.getName());
-                        names.add(r.toString());
-                        values.add(attributeValueForObject(op.value));
-//                        names.add(k.toString());
-                    }
-                    break;
-                }
-*/
-                case MAX:
-//                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.PUT));
+//                    Object value = op.value;
+//                    if (op.value == null) {
+////                        // null in DynamoDB means DELETE
+////                        removes.append("#att").append(names.size()).append(", ");
+////                        names.add(k.toString());
+//                        value = "<<DynamoDB:null>>";
+//                    }
                     sets.append("#att").append(names.size()).append(" = ").append(":val").append(values.size()).append(", ");
                     values.add(attributeValueForObject(op.value));
-
-//                    request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(new AttributeValue().withN(op.value.toString())).withComparisonOperator(ComparisonOperator.LE));
-                    expected.append(" and ").append("#att").append(names.size()).append(" <= ").append(":val").append(values.size());
                     names.add(k.toString());
-                    values.add(new AttributeValue().withN(op.value.toString()));
+                    break;
+                case MAX:
+                    adds.append("#att").append(names.size()).append(" ").append(":val").append(values.size()).append(", ");
+                    names.add(k.toString());
+                    values.add(new AttributeValue().withNS(op.value.toString()));
+
+//                    expected.append(" and ").append("#att").append(names.size()).append(" <= ").append(":val").append(values.size());
+//                    names.add(k.toString());
+//                    values.add(new AttributeValue().withN(op.value.toString()));
                     break;
                 case INCREMENT:
-//                    request.addAttributeUpdatesEntry(k.toString(), new AttributeValueUpdate(new AttributeValue().withN(op.value.toString()), AttributeAction.ADD));
                     adds.append("#att").append(names.size()).append(' ').append(":val").append(values.size()).append(", ");
                     names.add(k.toString());
                     values.add(new AttributeValue().withN(op.value.toString()));
@@ -452,11 +442,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
                         throw new IllegalStateException(
                                 "SET_MAP_ENTRY must not have null revision");
                     }
-//                    request.addAttributeUpdatesEntry(k.getName(), new AttributeValueUpdate(new AttributeValue()
-//                            .withM(Collections.singletonMap(r.toString(), (AttributeValue) null)), AttributeAction.DELETE));
                     removes.append("#att").append(names.size())./*append(".").append("#att").append(names.size()+1).*/append(", ");
-//                    names.add(k.getName());
-//                    names.add(r.toString());
                     names.add(k.toString());
                     break;
                 }
@@ -469,14 +455,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
                         }
                         expected.append(" and ").append(Boolean.TRUE.equals(op.value) ? "attribute_exists(" : "attribute_not_exists(").
                                 append("#att").append(names.size())./*append(".").append("#att").append(names.size()+1).*/append(")");
-//                        names.add(k.getName());
-//                        names.add(r.toString());
                         names.add(k.toString());
-//                        if (Boolean.TRUE.equals(op.value)) {
-//                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(true));
-//                        } else {
-//                            request.addExpectedEntry(k.toString(), new ExpectedAttributeValue(false));
-//                        }
                     }
                     break;
                 }
@@ -558,6 +537,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
     private <T extends Document> PutRequest create(Collection<T> collection, UpdateOp update) {
         PutRequest request = new PutRequest();
         boolean seenModCount = false;
+        Long modified = null;
         for (Map.Entry<UpdateOp.Key, UpdateOp.Operation> entry : update.getChanges().entrySet()) {
             UpdateOp.Key k = entry.getKey();
             UpdateOp.Operation op = entry.getValue();
@@ -570,9 +550,13 @@ public class DynamoDBDocumentStore implements DocumentStore {
                                 "SET_MAP_ENTRY must not have null revision");
                     }
                     // Fallthrough
-                case SET:
                 case MAX:
+                case SET:
                 case INCREMENT: {
+                    if ("_modified".equals(k.getName())) {
+                        modified = (Long) op.value;
+                        continue;
+                    }
                     request.addItemEntry(k.toString(), attributeValueForObject(op.value));
                     break;
                 }
@@ -596,6 +580,9 @@ public class DynamoDBDocumentStore implements DocumentStore {
                     break;
             }
         }
+        if (!request.getItem().containsKey("_modified")) {
+            request.addItemEntry("_modified", new AttributeValue().withNS(modified != null ? modified.toString() : String.valueOf(0)));
+        }
         if (!seenModCount) {
             request.addItemEntry(Document.MOD_COUNT, attributeValueForObject(1));
         }
@@ -617,14 +604,15 @@ public class DynamoDBDocumentStore implements DocumentStore {
         }
     }
 
-
     private AttributeValue attributeValueForObject(Object value) {
         if (value instanceof String) {
             return new AttributeValue((String)value);
         } else if (value instanceof Number) {
             return new AttributeValue().withN(String.valueOf(value));
         } else if (value instanceof Boolean) {
-            return new AttributeValue().withBOOL((Boolean)value);
+            return new AttributeValue().withBOOL((Boolean) value);
+        } else if (value == null) {
+            return new AttributeValue().withNULL(true);
         } else throw new MicroKernelException("Unsupported attribute value " + value + "(" + (value != null ? value.getClass() : "") + ")");
     }
 
@@ -684,7 +672,7 @@ public class DynamoDBDocumentStore implements DocumentStore {
                 argList = argList.length() + ": " + argList;
             }
             LOG.info(message + argList);
-            System.err.println(message + argList);
+//            System.err.println(message + argList);
         }
     }
 }

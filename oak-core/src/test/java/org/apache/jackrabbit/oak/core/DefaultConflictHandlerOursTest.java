@@ -32,11 +32,17 @@ import org.apache.jackrabbit.oak.api.PropertyState;
 import org.apache.jackrabbit.oak.api.Root;
 import org.apache.jackrabbit.oak.api.Tree;
 import org.apache.jackrabbit.oak.plugins.commit.DefaultConflictHandler;
+import org.apache.jackrabbit.oak.plugins.document.dynamodb.DynamoDBStoreBaseTest;
+import org.apache.jackrabbit.oak.plugins.document.dynamodb.SupportsDynamoDB;
 import org.apache.jackrabbit.oak.spi.security.OpenSecurityProvider;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import javax.jcr.NoSuchWorkspaceException;
+import javax.security.auth.login.LoginException;
+
+@SupportsDynamoDB
 public class DefaultConflictHandlerOursTest {
 
     private static final String OUR_VALUE = "our value";
@@ -46,11 +52,18 @@ public class DefaultConflictHandlerOursTest {
     private Root theirRoot;
 
     @Before
-    public void setUp() throws CommitFailedException {
-        ContentSession session = new Oak()
-                .with(new OpenSecurityProvider())
-                .with(DefaultConflictHandler.OURS)
-                .createContentSession();
+    public void setUp() throws CommitFailedException, LoginException, NoSuchWorkspaceException {
+        ContentSession session;
+        if (DynamoDBStoreBaseTest.isDynamoDBStore()) {
+            session = DynamoDBStoreBaseTest.createOak(true)
+                    .with(DefaultConflictHandler.OURS)
+                    .createContentSession();
+        } else {
+            session = new Oak()
+                    .with(new OpenSecurityProvider())
+                    .with(DefaultConflictHandler.OURS)
+                    .createContentSession();
+        }
 
         // Add test content
         Root root = session.getLatestRoot();
